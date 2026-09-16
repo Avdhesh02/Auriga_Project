@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AV Room — Gear Check-Out</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="top-inner">
+    <div class="brand-tag">
+      <span class="brand-hole"></span>
+      <div>
+        <h1 class="brand">AV ROOM</h1>
+        <div class="brand-sub">Gear check-out &amp; return desk</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="header-stat">
+        <div class="num" id="hdrAvailable">–</div>
+        <div class="lbl">units free right now</div>
+      </div>
+      <div id="authArea"></div>
+    </div>
+  </div>
+  <nav class="tabs">
+    <button data-tab="catalog" class="active">Catalog</button>
+    <button data-tab="myloans">My loans</button>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div id="connBanner"></div>
+
+  <section class="view active" id="view-catalog">
+    <h2 class="section-title">What's in the room</h2>
+    <p class="lede">Live counts, not a paper sheet. If it shows available, it's available. Borrowing needs a student account — a quick, free sign-up.</p>
+    <div id="eqGrid" class="eq-grid"></div>
+  </section>
+
+  <section class="view" id="view-myloans">
+    <h2 class="section-title">My loans</h2>
+    <div id="myLoansGate"></div>
+    <div id="myLoansResults"></div>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal" id="modalBody"></div>
+</div>
+
+<p style="text-align:center; color:var(--text-muted); font-size:12.5px; margin-top:-40px; padding-bottom:20px;">
+  Work at the AV desk? <a href="/staff.html">Staff login →</a>
+</p>
+
+<script src="/js/app.js"></script>
+</body>
+</html>

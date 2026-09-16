@@ -1,0 +1,18 @@
+{
+  "name": "av-gear-system",
+  "version": "1.0.0",
+  "description": "Campus AV Gear Management System — student borrowing with separate staff approval desk",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
