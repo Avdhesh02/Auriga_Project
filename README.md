@@ -1,5 +1,8 @@
 # Campus AV Gear Management System
 
+## Refer Branch twist-code for the update code, but kindly refer to the readme.md, reasoning.md and ai_logs through the main branch only
+
+
 A small Node.js + Express app for a college AV room: students browse the
 catalog freely, but need an account to request gear; staff have a completely
 separate login for approving requests, recording returns, and managing the
