@@ -1,399 +1,678 @@
 (function () {
   "use strict";
 
-  var state = { user: null, subtab: 'requests', equipment: [], loans: [], settings: {} };
+  var A = window.AV;
+  var state = {
+    user: null,
+    tab: 'requests',
+    loans: [],
+    equipment: [],
+    transfers: [],
+    staff: [],
+    settings: {},
+    stats: {},
+    units: {},        // equipmentId -> units, loaded on demand
+    openEquipment: null,
+    activeFilter: { q: '', overdueOnly: false }
+  };
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-  }
-  function money(n) { return '₹' + Number(n || 0).toFixed(0); }
-  function fmtDate(iso) {
-    if (!iso) return '—';
-    return new Date(iso + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-  }
-  function todayISO() { return new Date().toISOString().slice(0, 10); }
-  function daysBetween(a, b) {
-    var da = new Date(a + 'T00:00:00'), db = new Date(b + 'T00:00:00');
-    return Math.round((db - da) / 86400000);
-  }
-
-  async function api(method, url, body) {
-    var res = await fetch(url, {
-      method: method,
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: body ? JSON.stringify(body) : undefined
-    });
-    var data = {};
-    try { data = await res.json(); } catch (e) {}
-    if (!res.ok) throw new Error(data.error || 'Something went wrong.');
-    return data;
-  }
-
-  function openModal(html) {
-    document.getElementById('modalBody').innerHTML = html;
-    document.getElementById('modalBackdrop').classList.add('open');
-  }
-  function closeModal() {
-    document.getElementById('modalBackdrop').classList.remove('open');
-    document.getElementById('modalBody').innerHTML = '';
-  }
-
-  // ---------------- auth ----------------
+  // ---------------------------------------------------------------
+  // Session
+  // ---------------------------------------------------------------
   async function checkSession() {
-    var data = await api('GET', '/api/auth/me');
+    var data = await A.api('GET', '/api/auth/me');
     if (data.user && data.user.role === 'staff') {
       state.user = data.user;
-      showPanel();
-    } else {
-      state.user = null;
+      await showDesk();
     }
   }
 
   async function staffLogin() {
-    var email = document.getElementById('staffEmail').value.trim();
-    var password = document.getElementById('staffPassword').value;
     try {
-      var data = await api('POST', '/api/staff/login', { email: email, password: password });
+      var data = await A.api('POST', '/api/staff/login', {
+        email: A.val('staffEmail'), password: A.val('staffPassword')
+      });
       state.user = data.user;
-      showPanel();
-    } catch (e) {
-      document.getElementById('staffLoginError').innerHTML = '<div class="banner error">' + esc(e.message) + '</div>';
-    }
+      await showDesk();
+    } catch (e) { A.showError('staffLoginError', e.message); }
   }
 
-  function showPanel() {
+  async function showDesk() {
     document.getElementById('staffLockScreen').style.display = 'none';
     document.getElementById('staffPanel').style.display = 'block';
     document.getElementById('staffTabs').style.display = 'flex';
-    renderAuthArea();
-    switchSub('requests');
-    loadAll();
-  }
-
-  function renderAuthArea() {
     document.getElementById('authArea').innerHTML =
-      '<div class="who">Signed in as <b>' + esc(state.user.name) + '</b></div>' +
-      '<button class="btn small" id="logoutBtn">Log out</button>';
-    document.getElementById('logoutBtn').addEventListener('click', async function () {
-      await api('POST', '/api/auth/logout');
-      window.location.reload();
-    });
+      '<div class="who">At the desk: <b>' + A.esc(state.user.name) + '</b></div>' +
+      '<button class="btn small" data-action="logout">Log out</button>';
+    await loadAll();
+    switchTab('requests');
   }
 
-  // ---------------- data loading ----------------
+  // ---------------------------------------------------------------
+  // Data
+  // ---------------------------------------------------------------
   async function loadAll() {
-    var [eq, loans, settings] = await Promise.all([
-      api('GET', '/api/equipment'),
-      api('GET', '/api/loans'),
-      api('GET', '/api/settings')
+    var r = await Promise.all([
+      A.api('GET', '/api/loans'),
+      A.api('GET', '/api/equipment?all=1'),
+      A.api('GET', '/api/transfers'),
+      A.api('GET', '/api/settings'),
+      A.api('GET', '/api/stats'),
+      A.api('GET', '/api/staff')
     ]);
-    state.equipment = eq.equipment;
-    state.loans = loans.loans;
-    state.settings = settings.settings;
+    state.loans = r[0].loans;
+    state.equipment = r[1].equipment;
+    state.transfers = r[2].transfers;
+    state.settings = r[3].settings;
+    state.stats = r[4].stats;
+    state.staff = r[5].staff;
+    renderStats();
+    renderCounts();
+  }
+
+  async function reload() {
+    await loadAll();
+    if (state.openEquipment) await loadUnits(state.openEquipment);
     renderCurrent();
   }
 
-  function availableCountFor(eqId) {
-    var eq = state.equipment.find(function (e) { return e.id === eqId; });
-    return eq ? eq.availableUnits : 0;
+  async function loadUnits(eqId) {
+    var data = await A.api('GET', '/api/equipment/' + eqId + '/units');
+    state.units[eqId] = data.units;
   }
-  function activeLoansForBorrower(borrowerId, excludeLoanId) {
-    return state.loans.filter(function (l) {
-      return l.borrowerId === borrowerId && l.id !== excludeLoanId && (l.status === 'pending' || l.status === 'approved');
+
+  function renderStats() {
+    var s = state.stats;
+    document.getElementById('statStrip').innerHTML =
+      statBox(s.pendingRequests, 'requests waiting', 'gold') +
+      statBox(s.outNow, 'items out now', '') +
+      statBox(s.overdue, 'overdue', s.overdue ? 'warn' : '') +
+      statBox(s.dueToday, 'due back today', '') +
+      statBox(s.pendingTransfers, 'handovers waiting', 'teal') +
+      statBox(s.unitsFree + '/' + s.unitsTotal, 'units on the shelf', '') +
+      statBox(A.money(s.feesCollected), 'late fees charged', '');
+  }
+  function statBox(n, label, cls) {
+    return '<div class="stat-box ' + cls + '"><div class="n">' + A.esc(n) + '</div><div class="l">' + A.esc(label) + '</div></div>';
+  }
+
+  function renderCounts() {
+    var pairs = [
+      ['cntRequests', state.loans.filter(function (l) { return l.status === 'pending'; }).length],
+      ['cntOverdue', state.loans.filter(function (l) { return l.status === 'approved' && l.isOverdue; }).length],
+      ['cntTransfers', state.transfers.filter(function (t) { return t.status === 'pending'; }).length]
+    ];
+    pairs.forEach(function (p) {
+      var el = document.getElementById(p[0]);
+      el.textContent = p[1];
+      el.className = 'tab-count' + (p[1] ? '' : ' quiet');
     });
   }
 
-  // ---------------- subtabs ----------------
-  function switchSub(tab) {
-    state.subtab = tab;
-    document.querySelectorAll('#staffTabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.staff === tab); });
-    document.querySelectorAll('.staff-view').forEach(function (v) { v.style.display = (v.id === 'staff-' + tab) ? 'block' : 'none'; });
-    renderCurrent();
-  }
-  function renderCurrent() {
-    if (!state.user) return;
-    if (state.subtab === 'requests') renderRequests();
-    if (state.subtab === 'active') renderActive();
-    if (state.subtab === 'equipment') renderEquipment();
-    if (state.subtab === 'team') renderTeam();
-    if (state.subtab === 'settings') renderSettings();
-  }
-
-  // ---------------- requests ----------------
+  // ---------------------------------------------------------------
+  // Requests
+  // ---------------------------------------------------------------
   function renderRequests() {
-    var el = document.getElementById('staff-requests');
     var pending = state.loans.filter(function (l) { return l.status === 'pending'; });
-    if (pending.length === 0) { el.innerHTML = '<div class="empty-state">No pending requests. Nice and caught up.</div>'; return; }
-    el.innerHTML = pending.map(function (l) {
-      var avail = availableCountFor(l.equipmentId);
-      var activeCount = activeLoansForBorrower(l.borrowerId, l.id).length;
-      var limit = state.settings.maxActiveLoansPerBorrower;
-      var warn = '';
-      if (avail === 0) warn = '<div class="banner warn" style="margin:8px 0 0;">No units free — approving isn\'t possible until one is returned.</div>';
-      else if (limit && activeCount >= limit) warn = '<div class="banner warn" style="margin:8px 0 0;">This borrower already has ' + activeCount + ' active loan(s), at or over the limit of ' + limit + '.</div>';
-      return '' +
-        '<div class="row-card" style="align-items:flex-start;">' +
+    var html = '<h2 class="section-title">Requests waiting</h2>' +
+      '<p class="lede">Approving sets aside a specific unit and marks it out. If nothing is free, the request stays here until something comes back.</p>';
+
+    if (!pending.length) {
+      html += '<div class="empty-state">Nothing waiting. The desk is clear.</div>';
+    } else {
+      html += pending.map(function (l) {
+        var eq = state.equipment.find(function (e) { return e.id === l.equipmentId; });
+        var free = eq ? eq.availableUnits : 0;
+        var openForBorrower = state.loans.filter(function (o) {
+          return o.borrowerId === l.borrowerId && (o.status === 'approved' || o.status === 'pending');
+        }).length;
+        return '<div class="row-card is-pending">' +
           '<div class="rc-main">' +
-            '<div class="rc-title">' + esc(l.equipmentName) + ' — ' + esc(l.borrowerName) + '</div>' +
-            '<div class="rc-sub">' + esc(l.borrowerEmail) + ' · wants it until ' + fmtDate(l.dueDate) + (l.note ? ' · "' + esc(l.note) + '"' : '') + '</div>' +
-            warn +
+            '<div class="rc-title">' + A.esc(l.equipmentName) + ' \u2192 ' + A.esc(l.borrowerName) + '</div>' +
+            '<div class="rc-sub">' + A.esc(l.borrowerEmail) + ' · wants it until <span class="hl">' + A.fmtDate(l.dueDate) + '</span>' +
+              ' · asked ' + A.fmtDate(l.requestedAt) +
+              ' · ' + openForBorrower + ' of ' + state.settings.maxActiveLoansPerBorrower + ' slots used' +
+              (l.note ? '<br>Note: \u201c' + A.esc(l.note) + '\u201d' : '') +
+              '<br>' + (free > 0 ? free + ' unit(s) on the shelf' : 'Nothing free right now') + '</div>' +
           '</div>' +
           '<div class="rc-actions">' +
-            '<button class="btn small danger" onclick="AVSTAFF.rejectLoan(\'' + l.id + '\')">Reject</button>' +
-            '<button class="btn small primary" onclick="AVSTAFF.approveLoan(\'' + l.id + '\')">Approve</button>' +
-          '</div>' +
-        '</div>';
-    }).join('');
-  }
-
-  async function approveLoan(id) {
-    try { await api('PATCH', '/api/loans/' + id + '/approve'); await loadAll(); }
-    catch (e) { alert(e.message); }
-  }
-  async function rejectLoan(id) {
-    try { await api('PATCH', '/api/loans/' + id + '/reject'); await loadAll(); }
-    catch (e) { alert(e.message); }
-  }
-
-  // ---------------- active & overdue ----------------
-  function renderActive() {
-    var el = document.getElementById('staff-active');
-    var active = state.loans.filter(function (l) { return l.status === 'approved'; })
-      .sort(function (a, b) { return a.dueDate.localeCompare(b.dueDate); });
-    if (active.length === 0) { el.innerHTML = '<div class="empty-state">Nothing checked out right now.</div>'; return; }
-    el.innerHTML = active.map(function (l) {
-      var overdue = l.dueDate < todayISO();
-      var daysLate = overdue ? daysBetween(l.dueDate, todayISO()) : 0;
-      return '' +
-        '<div class="row-card">' +
-          '<div class="rc-main">' +
-            '<div class="rc-title">' + esc(l.equipmentName) + (l.unitLabel ? ' (' + esc(l.unitLabel) + ')' : '') + ' — ' + esc(l.borrowerName) + '</div>' +
-            '<div class="rc-sub">' + esc(l.borrowerEmail) + ' · due ' + fmtDate(l.dueDate) + (overdue ? ' · ' + daysLate + ' day(s) late' : '') + '</div>' +
-          '</div>' +
-          (overdue ? '<span class="pill overdue">overdue</span>' : '<span class="pill approved">on loan</span>') +
-          '<div class="rc-actions"><button class="btn small primary" onclick="AVSTAFF.openReturnModal(\'' + l.id + '\')">Record return</button></div>' +
-        '</div>';
-    }).join('');
-  }
-
-  function openReturnModal(loanId) {
-    var loan = state.loans.find(function (l) { return l.id === loanId; });
-    if (!loan) return;
-    var overdue = loan.dueDate < todayISO();
-    var daysLate = overdue ? daysBetween(loan.dueDate, todayISO()) : 0;
-    var lateFee = daysLate * loan.lateFeePerDay;
-    var refund = Math.max(0, loan.depositAmount - lateFee);
-    var body =
-      '<h3>Return: ' + esc(loan.equipmentName) + '</h3>' +
-      '<p class="modal-sub">Borrower: ' + esc(loan.borrowerName) + ' · due ' + fmtDate(loan.dueDate) + '</p>' +
-      (overdue ? '<div class="banner warn">' + daysLate + ' day(s) late × ' + money(loan.lateFeePerDay) + '/day = ' + money(lateFee) + ' late fee</div>' : '<div class="banner info">Returned on time — no late fee.</div>') +
-      '<div class="eq-meta" style="border:none; padding:0; margin: 12px 0;">' +
-        '<span>Deposit held <b>' + money(loan.depositAmount) + '</b></span>' +
-        '<span>Refund due <b>' + money(refund) + '</b></span>' +
-      '</div>' +
-      '<div class="modal-actions">' +
-        '<button class="btn" onclick="AVSTAFF.closeModal()">Cancel</button>' +
-        '<button class="btn primary" id="confirmReturnBtn">Confirm return</button>' +
-      '</div>';
-    openModal(body);
-    document.getElementById('confirmReturnBtn').addEventListener('click', function () { confirmReturn(loanId); });
-  }
-
-  async function confirmReturn(loanId) {
-    try { await api('PATCH', '/api/loans/' + loanId + '/return'); closeModal(); await loadAll(); }
-    catch (e) { alert(e.message); }
-  }
-
-  // ---------------- equipment ----------------
-  function renderEquipment() {
-    var el = document.getElementById('staff-equipment');
-    var html = '<button class="btn primary" style="margin-bottom:16px;" onclick="AVSTAFF.openAddEquipmentModal()">+ Add equipment</button>';
-    if (state.equipment.length === 0) {
-      html += '<div class="empty-state">Nothing added yet.</div>';
-    } else {
-      html += state.equipment.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).map(function (eq) {
-        return '' +
-          '<div class="settings-box" id="eqbox-' + eq.id + '">' +
-            '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">' +
-              '<div><div class="rc-title">' + esc(eq.name) + '</div><div class="rc-sub">' + esc(eq.category) + ' · deposit ' + money(eq.depositAmount) + ' · late fee ' + money(eq.lateFeePerDay) + '/day · max ' + eq.maxLoanDays + ' day(s) · ' + eq.availableUnits + '/' + eq.totalUnits + ' free</div></div>' +
-              '<button class="btn small" onclick="AVSTAFF.openAddUnitModal(\'' + eq.id + '\')">+ Add unit</button>' +
-            '</div>' +
-            '<div class="unit-list" style="margin-top:12px;">Loading units…</div>' +
-          '</div>';
+            '<button class="btn small danger" data-action="reject" data-id="' + l.id + '">Decline</button>' +
+            '<button class="btn small primary" data-action="approve" data-id="' + l.id + '"' + (free > 0 ? '' : ' disabled') + '>Approve</button>' +
+          '</div></div>';
       }).join('');
     }
-    el.innerHTML = html;
-    // fetch unit detail per equipment (staff-only endpoint)
-    state.equipment.forEach(function (eq) { loadUnitsFor(eq.id); });
-  }
 
-  async function loadUnitsFor(eqId) {
-    try {
-      var data = await api('GET', '/api/equipment/' + eqId + '/units');
-      var box = document.getElementById('eqbox-' + eqId);
-      if (!box) return;
-      var list = box.querySelector('.unit-list');
-      var loans = state.loans.filter(function (l) { return l.status === 'approved' && l.equipmentId === eqId; });
-      list.innerHTML = data.units.map(function (u) {
-        var loan = loans.find(function (l) { return l.unitId === u.id; });
-        var toggleDisabled = u.status === 'borrowed';
-        return '<div class="row-card" style="padding:8px 12px; margin-bottom:6px;">' +
-          '<div class="rc-main"><div class="rc-title" style="font-size:13px;">' + esc(u.label) + '</div>' +
-          '<div class="rc-sub">' + (loan ? 'with ' + esc(loan.borrowerName) + ' until ' + fmtDate(loan.dueDate) : esc(u.status)) + '</div></div>' +
-          '<div class="rc-actions"><button class="btn small" ' + (toggleDisabled ? 'disabled' : '') + ' onclick="AVSTAFF.toggleUnit(\'' + u.id + '\')">' +
-            (u.status === 'maintenance' ? 'Mark available' : 'Mark maintenance') +
-          '</button></div></div>';
-      }).join('') || '<div class="rc-sub">No units yet.</div>';
-    } catch (e) { /* ignore */ }
-  }
-
-  async function toggleUnit(unitId) {
-    try { await api('PATCH', '/api/units/' + unitId); await loadAll(); }
-    catch (e) { alert(e.message); }
-  }
-
-  function openAddEquipmentModal() {
-    var body =
-      '<h3>Add equipment</h3>' +
-      '<label class="field"><span class="field-label">Name</span><input type="text" id="newEqName" placeholder="e.g. Sony A7 III"></label>' +
-      '<label class="field"><span class="field-label">Category</span><input type="text" id="newEqCat" placeholder="Camera / Projector / Audio / Support"></label>' +
-      '<label class="field"><span class="field-label">Description</span><textarea id="newEqDesc"></textarea></label>' +
-      '<div class="field-row">' +
-        '<label class="field"><span class="field-label">Units to add</span><input type="number" id="newEqUnits" value="1" min="1" max="30"></label>' +
-        '<label class="field"><span class="field-label">Max loan length (days)</span><input type="number" id="newEqMaxDays" value="' + (state.settings.defaultLoanDays || 7) + '" min="1"></label>' +
-      '</div>' +
-      '<div class="field-row">' +
-        '<label class="field"><span class="field-label">Deposit</span><input type="number" id="newEqDeposit" value="0" min="0"></label>' +
-        '<label class="field"><span class="field-label">Late fee per day</span><input type="number" id="newEqLateFee" value="0" min="0"></label>' +
-      '</div>' +
-      '<div class="modal-actions">' +
-        '<button class="btn" onclick="AVSTAFF.closeModal()">Cancel</button>' +
-        '<button class="btn primary" id="addEqSubmit">Add to catalog</button>' +
-      '</div>';
-    openModal(body);
-    document.getElementById('addEqSubmit').addEventListener('click', submitNewEquipment);
-  }
-
-  async function submitNewEquipment() {
-    var payload = {
-      name: document.getElementById('newEqName').value.trim(),
-      category: document.getElementById('newEqCat').value.trim(),
-      description: document.getElementById('newEqDesc').value.trim(),
-      unitCount: document.getElementById('newEqUnits').value,
-      maxLoanDays: document.getElementById('newEqMaxDays').value,
-      depositAmount: document.getElementById('newEqDeposit').value,
-      lateFeePerDay: document.getElementById('newEqLateFee').value
-    };
-    try { await api('POST', '/api/equipment', payload); closeModal(); await loadAll(); }
-    catch (e) { alert(e.message); }
-  }
-
-  function openAddUnitModal(eqId) {
-    var eq = state.equipment.find(function (e) { return e.id === eqId; });
-    var body =
-      '<h3>Add a unit to ' + esc(eq.name) + '</h3>' +
-      '<label class="field"><span class="field-label">Label</span><input type="text" id="newUnitLabel" value="' + esc(eq.name) + ' #' + (eq.totalUnits + 1) + '"></label>' +
-      '<div class="modal-actions">' +
-        '<button class="btn" onclick="AVSTAFF.closeModal()">Cancel</button>' +
-        '<button class="btn primary" id="addUnitSubmit">Add unit</button>' +
-      '</div>';
-    openModal(body);
-    document.getElementById('addUnitSubmit').addEventListener('click', function () { submitNewUnit(eqId); });
-  }
-
-  async function submitNewUnit(eqId) {
-    var label = document.getElementById('newUnitLabel').value.trim();
-    try { await api('POST', '/api/equipment/' + eqId + '/units', { label: label }); closeModal(); await loadAll(); }
-    catch (e) { alert(e.message); }
-  }
-
-  // ---------------- staff accounts ----------------
-  function renderTeam() {
-    var el = document.getElementById('staff-team');
-    el.innerHTML =
-      '<div class="settings-box">' +
-        '<div class="rc-title" style="margin-bottom:12px;">Add a staff account</div>' +
-        '<p class="lede">Staff accounts are completely separate from student accounts — this is what keeps approvals and inventory changes restricted to the desk.</p>' +
-        '<label class="field"><span class="field-label">Name</span><input type="text" id="newStaffName"></label>' +
-        '<label class="field"><span class="field-label">Email</span><input type="email" id="newStaffEmail"></label>' +
-        '<label class="field"><span class="field-label">Password</span><input type="password" id="newStaffPassword" placeholder="At least 6 characters"></label>' +
-        '<div id="newStaffMsg"></div>' +
-        '<button class="btn primary" id="addStaffBtn">Create staff account</button>' +
-      '</div>';
-    document.getElementById('addStaffBtn').addEventListener('click', addStaffAccount);
-  }
-
-  async function addStaffAccount() {
-    var payload = {
-      name: document.getElementById('newStaffName').value.trim(),
-      email: document.getElementById('newStaffEmail').value.trim(),
-      password: document.getElementById('newStaffPassword').value
-    };
-    var msg = document.getElementById('newStaffMsg');
-    try {
-      await api('POST', '/api/staff/register', payload);
-      msg.innerHTML = '<div class="banner info">Staff account created.</div>';
-      document.getElementById('newStaffName').value = '';
-      document.getElementById('newStaffEmail').value = '';
-      document.getElementById('newStaffPassword').value = '';
-    } catch (e) {
-      msg.innerHTML = '<div class="banner error">' + esc(e.message) + '</div>';
+    var pendingT = state.transfers.filter(function (t) { return t.status === 'pending'; });
+    if (pendingT.length) {
+      html += '<h3 class="sub-title">Handovers students have started</h3>' +
+        '<p class="lede">These move on their own once the other student accepts. Nothing here changes what is on the shelf.</p>' +
+        pendingT.map(transferRow).join('');
     }
+    document.getElementById('staff-requests').innerHTML = html;
   }
 
-  // ---------------- settings ----------------
-  function renderSettings() {
-    var el = document.getElementById('staff-settings');
-    el.innerHTML =
-      '<div class="settings-box">' +
-        '<div class="rc-title" style="margin-bottom:12px;">Room rules</div>' +
-        '<div class="field-row">' +
-          '<label class="field"><span class="field-label">Max active loans per borrower</span><input type="number" id="setLimit" value="' + state.settings.maxActiveLoansPerBorrower + '" min="1"></label>' +
-          '<label class="field"><span class="field-label">Default loan length (days)</span><input type="number" id="setDefaultDays" value="' + state.settings.defaultLoanDays + '" min="1"></label>' +
-        '</div>' +
-        '<div id="setMsg"></div>' +
-        '<button class="btn primary" id="saveSettingsBtn">Save settings</button>' +
+  async function approve(id) {
+    try { await A.api('PATCH', '/api/loans/' + id + '/approve'); await reload(); A.toast('Approved and a unit set aside.'); }
+    catch (e) { A.toast(e.message, true); }
+  }
+
+  function openRejectModal(id) {
+    var loan = state.loans.find(function (l) { return l.id === id; });
+    A.openModal(
+      '<h3>Decline this request</h3>' +
+      '<p class="modal-sub">' + A.esc(loan.equipmentName) + ' for ' + A.esc(loan.borrowerName) + '</p>' +
+      '<label class="field"><span class="field-label">Reason (shows on their loan)</span>' +
+      '<input type="text" id="rejReason" placeholder="e.g. booked for the department shoot"></label>' +
+      '<div id="rejError"></div>' +
+      '<div class="modal-actions"><button class="btn" data-action="close-modal">Cancel</button>' +
+      '<button class="btn danger" data-action="do-reject" data-id="' + id + '">Decline request</button></div>'
+    );
+  }
+
+  async function doReject(id) {
+    try {
+      await A.api('PATCH', '/api/loans/' + id + '/reject', { reason: A.val('rejReason') });
+      A.closeModal(); await reload(); A.toast('Request declined.');
+    } catch (e) { A.showError('rejError', e.message); }
+  }
+
+  // ---------------------------------------------------------------
+  // Out & overdue
+  // ---------------------------------------------------------------
+  function renderActive() {
+    var list = state.loans.filter(function (l) { return l.status === 'approved'; });
+    if (state.activeFilter.overdueOnly) list = list.filter(function (l) { return l.isOverdue; });
+    if (state.activeFilter.q) {
+      var q = state.activeFilter.q.toLowerCase();
+      list = list.filter(function (l) {
+        return (l.borrowerName + ' ' + l.borrowerEmail + ' ' + l.equipmentName + ' ' + (l.unitLabel || '')).toLowerCase().indexOf(q) >= 0;
+      });
+    }
+    list.sort(function (a, b) { return a.dueDate.localeCompare(b.dueDate); });
+
+    var html = '<h2 class="section-title">Out &amp; overdue</h2>' +
+      '<p class="lede">Sorted by return date, so the oldest problem is on top. Recording a return works out the late fee and the deposit to give back.</p>' +
+      '<div class="filter-bar">' +
+        '<label class="field grow"><span class="field-label">Find a borrower or item</span>' +
+          '<input type="search" id="actSearch" value="' + A.esc(state.activeFilter.q) + '" placeholder="name, email, tripod…"></label>' +
+        '<label class="checkline" style="margin-bottom:0;"><input type="checkbox" id="actOverdue"' +
+          (state.activeFilter.overdueOnly ? ' checked' : '') + '> Overdue only</label>' +
       '</div>';
-    document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
+
+    if (!list.length) {
+      html += '<div class="empty-state">' + (state.activeFilter.overdueOnly ? 'Nothing is overdue.' : 'Nothing is out at the moment.') + '</div>';
+    } else {
+      html += list.map(function (l) {
+        var sub = A.esc(l.borrowerName) + ' · ' + A.esc(l.borrowerEmail) +
+          (l.unitLabel ? ' · ' + A.esc(l.unitLabel) : '') +
+          '<br><span class="hl">' + A.dueLabel(l.dueDate) + '</span> (' + A.fmtDate(l.dueDate) + ')' +
+          (l.isOverdue ? ' · late fee so far <span class="hl">' + A.money(l.runningLateFee) + '</span> of a ' +
+            A.money(l.depositAmount) + ' deposit' : ' · deposit held ' + A.money(l.depositAmount)) +
+          (l.transferCount ? '<br>Handed over ' + l.transferCount + ' time(s) — started by ' + A.esc(l.originalBorrowerName) : '') +
+          (l.lastNudgedAt ? '<br>Last reminder ' + A.fmtDate(l.lastNudgedAt) : '');
+        return '<div class="row-card' + (l.isOverdue ? ' is-overdue' : (l.daysLeft <= 1 ? ' is-due-soon' : '')) + '">' +
+          '<div class="rc-main"><div class="rc-title">' + A.esc(l.equipmentName) + '</div>' +
+          '<div class="rc-sub">' + sub + '</div></div>' +
+          '<div class="rc-actions">' +
+            '<button class="btn small" data-action="nudge" data-id="' + l.id + '">Remind</button>' +
+            '<button class="btn small" data-action="desk-handover" data-id="' + l.id + '">Hand over</button>' +
+            '<button class="btn small primary" data-action="return" data-id="' + l.id + '">Record return</button>' +
+          '</div></div>';
+      }).join('');
+    }
+    document.getElementById('staff-active').innerHTML = html;
+
+    A.on('actSearch', 'input', function (e) {
+      state.activeFilter.q = e.target.value.trim();
+      renderActive();
+      var box = document.getElementById('actSearch');
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    });
+    A.on('actOverdue', 'change', function (e) {
+      state.activeFilter.overdueOnly = e.target.checked;
+      renderActive();
+    });
+  }
+
+  function openReturnModal(id) {
+    var l = state.loans.find(function (x) { return x.id === id; });
+    var fee = l.isOverdue ? l.runningLateFee : 0;
+    var refund = Math.max(0, l.depositAmount - fee);
+    A.openModal(
+      '<h3>Record a return</h3>' +
+      '<p class="modal-sub">' + A.esc(l.unitLabel || l.equipmentName) + ' from ' + A.esc(l.borrowerName) + '</p>' +
+      '<div class="settings-box" style="margin-bottom:16px;">' +
+        '<div class="rc-sub">Due back ' + A.fmtDate(l.dueDate) + '</div>' +
+        '<div class="rc-sub">' + (l.isOverdue
+          ? l.daysLate + ' day(s) late × ' + A.money(l.lateFeePerDay) + ' = <b>' + A.money(fee) + '</b> late fee'
+          : 'On time, no late fee') + '</div>' +
+        '<div class="rc-sub">Deposit held ' + A.money(l.depositAmount) + ' → <b>give back ' + A.money(refund) + '</b></div>' +
+      '</div>' +
+      (l.transferCount ? '<div class="banner warn">This loan changed hands ' + l.transferCount +
+        ' time(s). ' + A.esc(l.borrowerName) + ' is holding it now, so the refund goes to them.</div>' : '') +
+      '<div id="retError"></div>' +
+      '<div class="modal-actions"><button class="btn" data-action="close-modal">Cancel</button>' +
+      '<button class="btn primary" data-action="do-return" data-id="' + id + '">Item is back, refund ' + A.money(refund) + '</button></div>'
+    );
+  }
+
+  async function doReturn(id) {
+    try {
+      var data = await A.api('PATCH', '/api/loans/' + id + '/return');
+      A.closeModal(); await reload();
+      A.toast('Back on the shelf. Late fee ' + A.money(data.loan.lateFeeCharged) + ', refund ' + A.money(data.loan.depositRefunded) + '.');
+    } catch (e) { A.showError('retError', e.message); }
+  }
+
+  async function nudge(id) {
+    try {
+      var data = await A.api('POST', '/api/loans/' + id + '/nudge');
+      var r = data.reminder;
+      var mailto = 'mailto:' + encodeURIComponent(r.to) + '?subject=' + encodeURIComponent(r.subject) + '&body=' + encodeURIComponent(r.body);
+      A.openModal(
+        '<h3>Reminder for ' + A.esc(data.loan.borrowerName) + '</h3>' +
+        '<p class="modal-sub">' + A.esc(r.to) + '</p>' +
+        '<pre class="reminder">' + A.esc(r.subject) + '\n\n' + A.esc(r.body) + '</pre>' +
+        '<div class="modal-actions">' +
+          '<button class="btn" data-action="close-modal">Close</button>' +
+          '<button class="btn" data-action="copy-reminder" data-text="' + A.esc(r.body) + '">Copy text</button>' +
+          '<a class="btn primary" style="text-decoration:none;" href="' + A.esc(mailto) + '">Open in mail</a>' +
+        '</div>'
+      );
+      await reload();
+    } catch (e) { A.toast(e.message, true); }
+  }
+
+  // ---------------------------------------------------------------
+  // Handovers
+  // ---------------------------------------------------------------
+  function transferRow(t) {
+    var pillClass = { pending: 'pending', completed: 'transferred', rejected: 'rejected', cancelled: 'cancelled' }[t.status];
+    var pillText = { pending: 'waiting', completed: 'done', rejected: 'declined', cancelled: 'withdrawn' }[t.status];
+    var actions = t.status === 'pending'
+      ? '<button class="btn small danger" data-action="cancel-transfer" data-id="' + t.id + '">Cancel</button>' : '';
+    return '<div class="row-card' + (t.status === 'pending' ? ' is-handover' : '') + '">' +
+      '<div class="rc-main"><div class="rc-title">' + A.esc(t.equipmentName) +
+        (t.unitLabel ? ' · ' + A.esc(t.unitLabel) : '') + '</div>' +
+      '<div class="rc-sub">' + A.esc(t.fromName) + ' <span class="handover-arrow">\u2192</span> ' + A.esc(t.toName) +
+        ' · due back ' + A.fmtDate(t.dueDate) + ' (carried over unchanged)' +
+        ' · started by ' + A.esc(t.initiatedRole === 'staff' ? 'the desk' : t.fromName) +
+        ' ' + A.fmtDate(t.createdAt) +
+        (t.note ? '<br>\u201c' + A.esc(t.note) + '\u201d' : '') + '</div></div>' +
+      '<div class="rc-actions"><span class="pill ' + pillClass + '">' + pillText + '</span>' + actions + '</div></div>';
+  }
+
+  function renderHandovers() {
+    var pending = state.transfers.filter(function (t) { return t.status === 'pending'; });
+    var done = state.transfers.filter(function (t) { return t.status !== 'pending'; });
+    var html = '<h2 class="section-title">Handovers</h2>' +
+      '<p class="lede">A loan can change hands without coming back to the room. The return date carries over untouched and the unit stays marked out the whole time, so the catalog count never moves. Use <b>Hand over</b> on the Out &amp; overdue tab when two students swap at the desk.</p>';
+    html += pending.length
+      ? '<h3 class="sub-title">Waiting for the other student to accept</h3>' + pending.map(transferRow).join('')
+      : '<div class="empty-state">No handover is waiting.</div>';
+    if (done.length) html += '<h3 class="sub-title">History</h3>' + done.map(transferRow).join('');
+    document.getElementById('staff-handovers').innerHTML = html;
+  }
+
+  function openDeskHandover(loanId) {
+    var l = state.loans.find(function (x) { return x.id === loanId; });
+    A.openModal(
+      '<h3>Hand over at the desk</h3>' +
+      '<p class="modal-sub">' + A.esc(l.unitLabel || l.equipmentName) + ', currently with ' + A.esc(l.borrowerName) + '</p>' +
+      '<label class="field"><span class="field-label">Taking it on (student email)</span>' +
+        '<input type="email" id="dhEmail" list="studentList" placeholder="name@clg.edu" autocomplete="off"></label>' +
+      '<datalist id="studentList"></datalist>' +
+      '<label class="field"><span class="field-label">Note</span>' +
+        '<input type="text" id="dhNote" placeholder="e.g. swapped at the desk, same shoot"></label>' +
+      '<div class="banner info">Return date stays ' + A.fmtDate(l.dueDate) + '. The unit stays marked out, so nothing changes on the catalog. ' +
+        'The deposit and any late fee move to the new borrower.</div>' +
+      '<div id="dhError"></div>' +
+      '<div class="modal-actions"><button class="btn" data-action="close-modal">Cancel</button>' +
+      '<button class="btn primary" data-action="do-desk-handover" data-id="' + loanId + '">Hand it over</button></div>'
+    );
+    var input = document.getElementById('dhEmail');
+    var timer = null;
+    input.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(async function () {
+        if (input.value.trim().length < 2) return;
+        try {
+          var data = await A.api('GET', '/api/students/search?q=' + encodeURIComponent(input.value.trim()));
+          document.getElementById('studentList').innerHTML = data.students.map(function (s) {
+            return '<option value="' + A.esc(s.email) + '">' + A.esc(s.name) + '</option>';
+          }).join('');
+        } catch (e) { /* suggestions are optional */ }
+      }, 220);
+    });
+  }
+
+  async function doDeskHandover(loanId) {
+    try {
+      var data = await A.api('POST', '/api/loans/' + loanId + '/transfers', {
+        toEmail: A.val('dhEmail'), note: A.val('dhNote')
+      });
+      A.closeModal(); await reload();
+      A.toast('Now with ' + data.loan.borrowerName + ', still due ' + A.fmtDate(data.loan.dueDate) + '.');
+    } catch (e) { A.showError('dhError', e.message); }
+  }
+
+  async function cancelTransfer(id) {
+    try { await A.api('PATCH', '/api/transfers/' + id + '/cancel'); await reload(); A.toast('Handover cancelled.'); }
+    catch (e) { A.toast(e.message, true); }
+  }
+
+  // ---------------------------------------------------------------
+  // Equipment
+  // ---------------------------------------------------------------
+  function renderEquipment() {
+    var html = '<h2 class="section-title">Equipment</h2>' +
+      '<p class="lede">Every item has its own units. A unit in repair drops out of the free count without anyone having to fake a loan.</p>' +
+      '<button class="btn primary" data-action="add-equipment" style="margin-bottom:16px;">Add an item</button>';
+
+    html += state.equipment.map(function (eq) {
+      var open = state.openEquipment === eq.id;
+      var units = state.units[eq.id] || [];
+      var body = '<div class="row-card" style="flex-direction:column; align-items:stretch;">' +
+        '<div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:center;">' +
+          '<div class="rc-main"><div class="rc-title">' + A.esc(eq.name) +
+            (eq.retired ? ' <span class="pill">retired</span>' : '') + '</div>' +
+            '<div class="rc-sub">' + A.esc(eq.category) + ' · ' + eq.availableUnits + ' free of ' + eq.totalUnits +
+            (eq.maintenanceUnits ? ' · ' + eq.maintenanceUnits + ' in repair' : '') +
+            ' · deposit ' + A.money(eq.depositAmount) + ' · late ' + A.money(eq.lateFeePerDay) + '/day · up to ' + eq.maxLoanDays + ' day(s)</div>' +
+          '</div>' +
+          '<div class="rc-actions">' +
+            '<button class="btn small" data-action="edit-equipment" data-id="' + eq.id + '">Edit</button>' +
+            '<button class="btn small" data-action="toggle-units" data-id="' + eq.id + '">' + (open ? 'Hide units' : 'Units') + '</button>' +
+          '</div>' +
+        '</div>';
+
+      if (open) {
+        body += '<div class="unit-list">' + (units.length ? units.map(function (u) {
+          var meta = u.status === 'borrowed'
+            ? 'with ' + A.esc(u.borrowerName) + ', due ' + A.fmtDate(u.dueDate) + (u.overdue ? ' (overdue)' : '')
+            : (u.status === 'maintenance' ? 'in repair' : 'on the shelf');
+          return '<div class="unit-line">' +
+            '<span class="u-label">' + A.esc(u.label) + ' <span class="u-meta">— ' + meta + '</span></span>' +
+            '<span class="rc-actions">' +
+              (u.status === 'borrowed' ? '' :
+                '<button class="btn small" data-action="toggle-maintenance" data-id="' + u.id + '">' +
+                (u.status === 'maintenance' ? 'Back in service' : 'Mark in repair') + '</button>' +
+                '<button class="btn small danger" data-action="delete-unit" data-id="' + u.id + '">Remove</button>') +
+            '</span></div>';
+        }).join('') : '<div class="rc-sub">No units yet.</div>') +
+        '<button class="btn small" style="margin-top:10px;" data-action="add-unit" data-id="' + eq.id + '">Add a unit</button>' +
+        '</div>';
+      }
+      return body + '</div>';
+    }).join('');
+
+    document.getElementById('staff-equipment').innerHTML = html;
+  }
+
+  function equipmentForm(eq) {
+    return '<label class="field"><span class="field-label">Name</span><input type="text" id="eqName" value="' + A.esc(eq ? eq.name : '') + '"></label>' +
+      '<div class="field-row">' +
+        '<label class="field"><span class="field-label">Category</span><input type="text" id="eqCat" value="' + A.esc(eq ? eq.category : '') + '" placeholder="Camera, Audio…"></label>' +
+        '<label class="field"><span class="field-label">Days it can go out for</span><input type="number" id="eqDays" min="1" value="' + (eq ? eq.maxLoanDays : 3) + '"></label>' +
+      '</div>' +
+      '<label class="field"><span class="field-label">What is in the kit</span><textarea id="eqDesc">' + A.esc(eq ? eq.description : '') + '</textarea></label>' +
+      '<div class="field-row">' +
+        '<label class="field"><span class="field-label">Deposit (\u20b9)</span><input type="number" id="eqDep" min="0" value="' + (eq ? eq.depositAmount : 0) + '"></label>' +
+        '<label class="field"><span class="field-label">Late fee per day (\u20b9)</span><input type="number" id="eqLate" min="0" value="' + (eq ? eq.lateFeePerDay : 0) + '"></label>' +
+      '</div>';
+  }
+
+  function openAddEquipment() {
+    A.openModal('<h3>Add an item</h3><p class="modal-sub">Units are created for you and numbered.</p>' +
+      equipmentForm(null) +
+      '<label class="field"><span class="field-label">How many units</span><input type="number" id="eqUnits" min="1" value="1"></label>' +
+      '<div id="eqError"></div>' +
+      '<div class="modal-actions"><button class="btn" data-action="close-modal">Cancel</button>' +
+      '<button class="btn primary" data-action="do-add-equipment">Add to the catalog</button></div>');
+  }
+
+  async function doAddEquipment() {
+    try {
+      await A.api('POST', '/api/equipment', {
+        name: A.val('eqName'), category: A.val('eqCat'), description: A.val('eqDesc'),
+        depositAmount: A.val('eqDep'), lateFeePerDay: A.val('eqLate'),
+        maxLoanDays: A.val('eqDays'), unitCount: A.val('eqUnits')
+      });
+      A.closeModal(); await reload(); A.toast('Added to the catalog.');
+    } catch (e) { A.showError('eqError', e.message); }
+  }
+
+  function openEditEquipment(id) {
+    var eq = state.equipment.find(function (e) { return e.id === id; });
+    A.openModal('<h3>Edit ' + A.esc(eq.name) + '</h3>' +
+      '<p class="modal-sub">Changes apply to new loans. Loans already out keep the deposit and rate they were made with.</p>' +
+      equipmentForm(eq) +
+      '<label class="checkline"><input type="checkbox" id="eqRetired"' + (eq.retired ? ' checked' : '') + '> Retire this item (hide it from the catalog)</label>' +
+      '<div id="eqError"></div>' +
+      '<div class="modal-actions"><button class="btn" data-action="close-modal">Cancel</button>' +
+      '<button class="btn primary" data-action="do-edit-equipment" data-id="' + id + '">Save</button></div>');
+  }
+
+  async function doEditEquipment(id) {
+    try {
+      await A.api('PATCH', '/api/equipment/' + id, {
+        name: A.val('eqName'), category: A.val('eqCat'), description: A.val('eqDesc'),
+        depositAmount: A.val('eqDep'), lateFeePerDay: A.val('eqLate'), maxLoanDays: A.val('eqDays'),
+        retired: document.getElementById('eqRetired').checked
+      });
+      A.closeModal(); await reload(); A.toast('Saved.');
+    } catch (e) { A.showError('eqError', e.message); }
+  }
+
+  async function toggleUnits(id) {
+    state.openEquipment = state.openEquipment === id ? null : id;
+    if (state.openEquipment) await loadUnits(state.openEquipment);
+    renderEquipment();
+  }
+
+  async function addUnit(eqId) {
+    try {
+      await A.api('POST', '/api/equipment/' + eqId + '/units', {});
+      state.openEquipment = eqId;
+      await reload(); A.toast('Unit added.');
+    } catch (e) { A.toast(e.message, true); }
+  }
+
+  async function toggleMaintenance(unitId) {
+    try { await A.api('PATCH', '/api/units/' + unitId + '/maintenance'); await reload(); }
+    catch (e) { A.toast(e.message, true); }
+  }
+
+  async function deleteUnit(unitId) {
+    try {
+      var data = await A.api('DELETE', '/api/units/' + unitId);
+      await reload();
+      A.toast(data.removed ? 'Unit removed.' : 'Unit has loan history, so it was retired instead.');
+    } catch (e) { A.toast(e.message, true); }
+  }
+
+  // ---------------------------------------------------------------
+  // Staff accounts
+  // ---------------------------------------------------------------
+  function renderTeam() {
+    var html = '<h2 class="section-title">Staff accounts</h2>' +
+      '<p class="lede">Anyone here can approve requests and record returns. Retire the default account once you have made a real one.</p>' +
+      '<button class="btn primary" data-action="add-staff" style="margin-bottom:16px;">Add a staff account</button>' +
+      state.staff.map(function (s) {
+        return '<div class="row-card">' +
+          '<div class="rc-main"><div class="rc-title">' + A.esc(s.name) + (s.id === state.user.id ? ' (you)' : '') + '</div>' +
+          '<div class="rc-sub">' + A.esc(s.email) + ' · added ' + A.fmtDate(s.createdAt) + '</div></div>' +
+          '<div class="rc-actions">' +
+            '<span class="pill ' + (s.active ? 'approved' : 'cancelled') + '">' + (s.active ? 'active' : 'switched off') + '</span>' +
+            '<button class="btn small" data-action="reset-staff-password" data-id="' + s.id + '" data-name="' + A.esc(s.name) + '">New password</button>' +
+            '<button class="btn small ' + (s.active ? 'danger' : '') + '" data-action="toggle-staff" data-id="' + s.id + '" data-active="' + (s.active ? '0' : '1') + '">' +
+              (s.active ? 'Switch off' : 'Switch on') + '</button>' +
+          '</div></div>';
+      }).join('');
+    document.getElementById('staff-team').innerHTML = html;
+  }
+
+  function openAddStaff() {
+    A.openModal('<h3>Add a staff account</h3><p class="modal-sub">They log in here, not on the student page.</p>' +
+      '<label class="field"><span class="field-label">Name</span><input type="text" id="stName"></label>' +
+      '<label class="field"><span class="field-label">Email</span><input type="email" id="stEmail"></label>' +
+      '<label class="field"><span class="field-label">Password</span><input type="password" id="stPass" placeholder="At least 6 characters"></label>' +
+      '<div id="stError"></div>' +
+      '<div class="modal-actions"><button class="btn" data-action="close-modal">Cancel</button>' +
+      '<button class="btn primary" data-action="do-add-staff">Create account</button></div>');
+  }
+
+  async function doAddStaff() {
+    try {
+      await A.api('POST', '/api/staff/register', { name: A.val('stName'), email: A.val('stEmail'), password: A.val('stPass') });
+      A.closeModal(); await reload(); A.toast('Staff account created.');
+    } catch (e) { A.showError('stError', e.message); }
+  }
+
+  function openResetPassword(id, name) {
+    A.openModal('<h3>New password for ' + A.esc(name) + '</h3>' +
+      '<label class="field"><span class="field-label">Password</span><input type="password" id="pwNew" placeholder="At least 6 characters"></label>' +
+      '<div id="pwError"></div>' +
+      '<div class="modal-actions"><button class="btn" data-action="close-modal">Cancel</button>' +
+      '<button class="btn primary" data-action="do-reset-password" data-id="' + id + '">Set password</button></div>');
+  }
+
+  async function doResetPassword(id) {
+    try {
+      await A.api('PATCH', '/api/staff/' + id + '/password', { newPassword: A.val('pwNew') });
+      A.closeModal(); A.toast('Password updated.');
+    } catch (e) { A.showError('pwError', e.message); }
+  }
+
+  async function toggleStaff(id, active) {
+    try { await A.api('PATCH', '/api/staff/' + id + '/active', { active: active }); await reload(); }
+    catch (e) { A.toast(e.message, true); }
+  }
+
+  // ---------------------------------------------------------------
+  // Settings
+  // ---------------------------------------------------------------
+  function renderSettings() {
+    var s = state.settings;
+    document.getElementById('staff-settings').innerHTML =
+      '<h2 class="section-title">Room rules</h2>' +
+      '<p class="lede">These apply to everyone borrowing from this room.</p>' +
+      '<div class="settings-box">' +
+        '<div class="field-row">' +
+          '<label class="field"><span class="field-label">Most loans one student can have open</span>' +
+            '<input type="number" id="setMax" min="1" max="20" value="' + s.maxActiveLoansPerBorrower + '"></label>' +
+          '<label class="field"><span class="field-label">Default loan length (days)</span>' +
+            '<input type="number" id="setDays" min="1" max="90" value="' + s.defaultLoanDays + '"></label>' +
+        '</div>' +
+        '<label class="checkline"><input type="checkbox" id="setTransfers"' + (s.allowStudentTransfers ? ' checked' : '') + '>' +
+          ' Let students start a handover themselves (the other student still has to accept)</label>' +
+        '<div id="setError"></div>' +
+        '<button class="btn primary" data-action="save-settings">Save rules</button>' +
+      '</div>' +
+      '<div class="settings-box">' +
+        '<h3 class="sub-title" style="margin-top:0;">Your own login</h3>' +
+        '<label class="field"><span class="field-label">Current password</span><input type="password" id="ownOld"></label>' +
+        '<label class="field"><span class="field-label">New password</span><input type="password" id="ownNew"></label>' +
+        '<div id="ownError"></div>' +
+        '<button class="btn" data-action="change-own-password">Change my password</button>' +
+      '</div>';
   }
 
   async function saveSettings() {
-    var payload = {
-      maxActiveLoansPerBorrower: document.getElementById('setLimit').value,
-      defaultLoanDays: document.getElementById('setDefaultDays').value
-    };
     try {
-      var data = await api('PATCH', '/api/settings', payload);
-      state.settings = data.settings;
-      document.getElementById('setMsg').innerHTML = '<div class="banner info">Saved.</div>';
-    } catch (e) {
-      document.getElementById('setMsg').innerHTML = '<div class="banner error">' + esc(e.message) + '</div>';
-    }
+      await A.api('PATCH', '/api/settings', {
+        maxActiveLoansPerBorrower: A.val('setMax'),
+        defaultLoanDays: A.val('setDays'),
+        allowStudentTransfers: document.getElementById('setTransfers').checked
+      });
+      await reload(); A.toast('Rules saved.');
+    } catch (e) { A.showError('setError', e.message); }
   }
 
-  // ---------------- init ----------------
-  document.addEventListener('DOMContentLoaded', function () {
-    document.getElementById('staffLoginBtn').addEventListener('click', staffLogin);
-    document.getElementById('staffPassword').addEventListener('keydown', function (e) { if (e.key === 'Enter') staffLogin(); });
+  async function changeOwnPassword() {
+    try {
+      await A.api('PATCH', '/api/auth/password', { currentPassword: A.val('ownOld'), newPassword: A.val('ownNew') });
+      document.getElementById('ownOld').value = '';
+      document.getElementById('ownNew').value = '';
+      A.toast('Password changed.');
+    } catch (e) { A.showError('ownError', e.message); }
+  }
+
+  // ---------------------------------------------------------------
+  // Tabs and events
+  // ---------------------------------------------------------------
+  function switchTab(tab) {
+    state.tab = tab;
     document.querySelectorAll('#staffTabs button').forEach(function (b) {
-      b.addEventListener('click', function () { switchSub(b.dataset.staff); });
+      b.classList.toggle('active', b.dataset.staff === tab);
     });
-    document.getElementById('modalBackdrop').addEventListener('click', function (e) {
-      if (e.target === document.getElementById('modalBackdrop')) closeModal();
+    document.querySelectorAll('.staff-view').forEach(function (v) {
+      v.style.display = v.id === 'staff-' + tab ? 'block' : 'none';
     });
-    checkSession();
+    renderCurrent();
+  }
+
+  function renderCurrent() {
+    if (!state.user) return;
+    renderStats();
+    renderCounts();
+    ({
+      requests: renderRequests, active: renderActive, handovers: renderHandovers,
+      equipment: renderEquipment, team: renderTeam, settings: renderSettings
+    })[state.tab]();
+  }
+
+  var actions = {
+    'close-modal': function () { A.closeModal(); },
+    'logout': async function () { await A.api('POST', '/api/auth/logout'); window.location.reload(); },
+    'approve': function (el) { approve(el.dataset.id); },
+    'reject': function (el) { openRejectModal(el.dataset.id); },
+    'do-reject': function (el) { doReject(el.dataset.id); },
+    'return': function (el) { openReturnModal(el.dataset.id); },
+    'do-return': function (el) { doReturn(el.dataset.id); },
+    'nudge': function (el) { nudge(el.dataset.id); },
+    'copy-reminder': function (el) {
+      navigator.clipboard.writeText(el.dataset.text).then(function () { A.toast('Copied.'); },
+        function () { A.toast('Could not copy — select the text instead.', true); });
+    },
+    'desk-handover': function (el) { openDeskHandover(el.dataset.id); },
+    'do-desk-handover': function (el) { doDeskHandover(el.dataset.id); },
+    'cancel-transfer': function (el) { cancelTransfer(el.dataset.id); },
+    'add-equipment': openAddEquipment,
+    'do-add-equipment': doAddEquipment,
+    'edit-equipment': function (el) { openEditEquipment(el.dataset.id); },
+    'do-edit-equipment': function (el) { doEditEquipment(el.dataset.id); },
+    'toggle-units': function (el) { toggleUnits(el.dataset.id); },
+    'add-unit': function (el) { addUnit(el.dataset.id); },
+    'toggle-maintenance': function (el) { toggleMaintenance(el.dataset.id); },
+    'delete-unit': function (el) { deleteUnit(el.dataset.id); },
+    'add-staff': openAddStaff,
+    'do-add-staff': doAddStaff,
+    'reset-staff-password': function (el) { openResetPassword(el.dataset.id, el.dataset.name); },
+    'do-reset-password': function (el) { doResetPassword(el.dataset.id); },
+    'toggle-staff': function (el) { toggleStaff(el.dataset.id, el.dataset.active === '1'); },
+    'save-settings': saveSettings,
+    'change-own-password': changeOwnPassword
+  };
+
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-action]');
+    if (!el || el.tagName === 'A') return;
+    var fn = actions[el.dataset.action];
+    if (fn) { e.preventDefault(); fn(el); }
   });
 
-  window.AVSTAFF = {
-    closeModal: closeModal,
-    approveLoan: approveLoan,
-    rejectLoan: rejectLoan,
-    openReturnModal: openReturnModal,
-    toggleUnit: toggleUnit,
-    openAddEquipmentModal: openAddEquipmentModal,
-    openAddUnitModal: openAddUnitModal
-  };
+  document.addEventListener('DOMContentLoaded', async function () {
+    A.bindModalDismiss();
+    A.on('staffLoginBtn', 'click', staffLogin);
+    ['staffEmail', 'staffPassword'].forEach(function (id) {
+      A.on(id, 'keydown', function (e) { if (e.key === 'Enter') staffLogin(); });
+    });
+    document.querySelectorAll('#staffTabs button').forEach(function (b) {
+      b.addEventListener('click', function () { switchTab(b.dataset.staff); });
+    });
+    try { await checkSession(); }
+    catch (e) { A.showError('staffLoginError', 'Could not reach the server. Is it running?'); }
+  });
 })();

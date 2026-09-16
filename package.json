@@ -1,18 +1,23 @@
 {
   "name": "av-gear-system",
-  "version": "1.0.0",
-  "description": "Campus AV Gear Management System — student borrowing with separate staff approval desk",
+  "version": "2.0.0",
+  "description": "Campus AV room gear lending: live availability, deposits, late fees, loan limits and loan handovers, on SQLite",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node tests/logic.test.js",
+    "demo": "node scripts/demo-data.js",
+    "reset": "node scripts/reset-db.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.5.0",
     "express": "^4.19.2",
     "express-session": "^1.18.0"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "private": true
 }

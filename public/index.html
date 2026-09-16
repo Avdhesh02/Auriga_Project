@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AV Room — Gear Check-Out</title>
+<title>AV Room — gear check-out</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -14,7 +14,7 @@
       <span class="brand-hole"></span>
       <div>
         <h1 class="brand">AV ROOM</h1>
-        <div class="brand-sub">Gear check-out &amp; return desk</div>
+        <div class="brand-sub">Gear check-out and return desk</div>
       </div>
     </div>
     <div class="header-right">
@@ -25,36 +25,55 @@
       <div id="authArea"></div>
     </div>
   </div>
-  <nav class="tabs">
+  <nav class="tabs" id="mainTabs">
     <button data-tab="catalog" class="active">Catalog</button>
-    <button data-tab="myloans">My loans</button>
+    <button data-tab="myloans">My loans<span class="tab-count quiet" id="cntLoans">0</span></button>
+    <button data-tab="handovers">Handovers<span class="tab-count quiet" id="cntHandovers">0</span></button>
   </nav>
 </header>
 
 <div class="wrap">
-  <div id="connBanner"></div>
 
   <section class="view active" id="view-catalog">
     <h2 class="section-title">What's in the room</h2>
-    <p class="lede">Live counts, not a paper sheet. If it shows available, it's available. Borrowing needs a student account — a quick, free sign-up.</p>
+    <p class="lede">Counts come straight off the shelf records, so if it says free, it is free. Pick a date to see what will be back by then. Borrowing needs a student account, which takes a minute to make.</p>
+
+    <div class="filter-bar">
+      <label class="field grow">
+        <span class="field-label">Search</span>
+        <input type="search" id="fltSearch" placeholder="camera, mic, tripod…">
+      </label>
+      <label class="field">
+        <span class="field-label">Free by</span>
+        <input type="date" id="fltDate">
+      </label>
+      <button class="btn small ghost" id="fltClear">Clear</button>
+    </div>
+    <div class="chips" id="catChips" style="margin-bottom:16px;"></div>
+
     <div id="eqGrid" class="eq-grid"></div>
   </section>
 
   <section class="view" id="view-myloans">
     <h2 class="section-title">My loans</h2>
-    <div id="myLoansGate"></div>
-    <div id="myLoansResults"></div>
+    <div id="myLoansBody"></div>
   </section>
+
+  <section class="view" id="view-handovers">
+    <h2 class="section-title">Handovers</h2>
+    <p class="lede">Passing gear to someone else on your team? Hand the loan over instead of returning it. The return date stays exactly as it is, and the item never goes back on the shelf in between.</p>
+    <div id="handoverBody"></div>
+  </section>
+
 </div>
 
 <div class="modal-backdrop" id="modalBackdrop">
   <div class="modal" id="modalBody"></div>
 </div>
 
-<p style="text-align:center; color:var(--text-muted); font-size:12.5px; margin-top:-40px; padding-bottom:20px;">
-  Work at the AV desk? <a href="/staff.html">Staff login →</a>
-</p>
+<p class="footer-note">Work at the AV desk? <a href="/staff.html">Staff login</a></p>
 
+<script src="/js/common.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>

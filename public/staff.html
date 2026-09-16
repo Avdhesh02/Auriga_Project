@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AV Room — Staff Desk</title>
+<title>AV Room — staff desk</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -14,14 +14,15 @@
       <span class="brand-hole"></span>
       <div>
         <h1 class="brand">STAFF DESK</h1>
-        <div class="brand-sub">Approvals, returns &amp; inventory</div>
+        <div class="brand-sub">Approvals, returns and inventory</div>
       </div>
     </div>
     <div class="header-right" id="authArea"></div>
   </div>
   <nav class="tabs" id="staffTabs" style="display:none;">
-    <button data-staff="requests" class="active">Requests</button>
-    <button data-staff="active">Active &amp; overdue</button>
+    <button data-staff="requests" class="active">Requests<span class="tab-count quiet" id="cntRequests">0</span></button>
+    <button data-staff="active">Out &amp; overdue<span class="tab-count quiet" id="cntOverdue">0</span></button>
+    <button data-staff="handovers">Handovers<span class="tab-count quiet" id="cntTransfers">0</span></button>
     <button data-staff="equipment">Equipment</button>
     <button data-staff="team">Staff accounts</button>
     <button data-staff="settings">Settings</button>
@@ -32,17 +33,19 @@
 
   <div id="staffLockScreen" class="admin-lock">
     <h2 class="section-title" style="margin-top:0;">Staff login</h2>
-    <p class="lede" style="margin:0 auto 16px;">This is a separate account system from student logins — staff members approve requests, record returns, and manage the catalog.</p>
+    <p class="lede">Separate from student accounts on purpose. A student login can never open this desk, and a staff login can never book gear out for itself.</p>
     <div id="staffLoginError"></div>
     <label class="field"><span class="field-label">Staff email</span><input type="email" id="staffEmail" value="staff@avroom.local"></label>
-    <label class="field"><span class="field-label">Password</span><input type="password" id="staffPassword"></label>
+    <label class="field"><span class="field-label">Password</span><input type="password" id="staffPassword" autocomplete="current-password"></label>
     <button class="btn primary" id="staffLoginBtn" style="width:100%;">Log in</button>
-    <p class="lede" style="margin-top:14px; font-size:12px;">First run default: <code class="tagcode">staff@avroom.local</code> / <code class="tagcode">admin123</code> — change this from Staff accounts after logging in.</p>
+    <p class="lede" style="margin-top:14px; font-size:12px;">First run: <code class="tagcode">staff@avroom.local</code> / <code class="tagcode">admin123</code>. Change it from Staff accounts once you are in.</p>
   </div>
 
   <div id="staffPanel" style="display:none;">
+    <div class="stat-strip" id="statStrip"></div>
     <div id="staff-requests" class="staff-view"></div>
     <div id="staff-active" class="staff-view" style="display:none;"></div>
+    <div id="staff-handovers" class="staff-view" style="display:none;"></div>
     <div id="staff-equipment" class="staff-view" style="display:none;"></div>
     <div id="staff-team" class="staff-view" style="display:none;"></div>
     <div id="staff-settings" class="staff-view" style="display:none;"></div>
@@ -53,10 +56,9 @@
   <div class="modal" id="modalBody"></div>
 </div>
 
-<p style="text-align:center; color:var(--text-muted); font-size:12.5px;">
-  <a href="/index.html">← Back to student catalog</a>
-</p>
+<p class="footer-note"><a href="/index.html">Back to the student catalog</a></p>
 
+<script src="/js/common.js"></script>
 <script src="/js/staff.js"></script>
 </body>
 </html>
